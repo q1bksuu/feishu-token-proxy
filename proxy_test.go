@@ -494,3 +494,23 @@ func TestForward_UpstreamUnreachable(t *testing.T) {
 		t.Errorf("code = %d, want -1", code)
 	}
 }
+
+func TestForward_PreservesRawQueryVerbatim(t *testing.T) {
+	env := newTestEnv(t)
+	rec := &apiRecorder{}
+	env.f.setAPI(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(r)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	const rawQuery = "query=a;b&discount=100%&page_size=10"
+	resp, err := http.Get(env.proxy.URL + "/open-apis/search/v1/x?" + rawQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readAll(t, resp)
+	calls := rec.all()
+	if len(calls) != 1 || calls[0].rawQuery != rawQuery {
+		t.Errorf("upstream calls %d, rawQuery %q, want %q", len(calls), calls[0].rawQuery, rawQuery)
+	}
+}

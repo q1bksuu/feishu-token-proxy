@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -29,6 +30,9 @@ func NewServer(upstream *url.URL, tokens *TokenManager, transport http.RoundTrip
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(upstream)
+			// ReverseProxy 在调用 Rewrite 前会重新编码无法解析的 query（含 ; 或孤立的 %），并丢掉相应参数；
+			// 本服务不解析 query，这里换回调用方的原始 query 原样转发
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Header.Del("Authorization")
 			// 由上游 Transport 自行协商 gzip 并自动解压，失效识别读到的是明文，调用方收到的也是明文
 			pr.Out.Header.Del("Accept-Encoding")
@@ -56,7 +60,24 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeProxyError(w, http.StatusNotFound, "未知路径：仅支持 /open-apis/*、/token、/health")
 	})
-	return s.logRequests(mux)
+	return s.logRequests(localOnly(mux))
+}
+
+// localOnly 只放行本机程序直接发起的请求：Host 必须是 localhost 或回环 IP，且不带浏览器才会附加的 Origin 头
+// 或非 none 的 Sec-Fetch-Site 头。这样本机浏览器里的网页无法借 DNS rebinding 或跨站请求读取 token、以应用身份调用飞书。
+func localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		site := r.Header.Get("Sec-Fetch-Site")
+		if !isLoopbackHost(host) || r.Header.Get("Origin") != "" || (site != "" && site != "none") {
+			writeProxyError(w, http.StatusForbidden, "只接受本机程序直接发起的请求")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // forward 把请求体整体读入内存以便失效时重放，然后交给反向代理。

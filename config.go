@@ -87,13 +87,20 @@ func checkListen(listen string) error {
 	if err != nil {
 		return fmt.Errorf("配置项 listen 格式错误（应为 host:port）：%q", listen)
 	}
-	if host == "localhost" {
-		return nil
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+	if isLoopbackHost(host) {
 		return nil
 	}
 	return fmt.Errorf("配置项 listen 只能是回环地址（127.0.0.1、::1、localhost），当前为 %q", listen)
+}
+
+// isLoopbackHost 判断主机名是否为 localhost 或回环 IP（IPv6 可带方括号）。
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func parseUpstream(raw string) (*url.URL, error) {
