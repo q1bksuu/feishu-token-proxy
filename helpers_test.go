@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -169,4 +170,36 @@ func newTestManager(t *testing.T, f *fakeFeishu) (*TokenManager, *fakeClock, *lo
 	m := NewTokenManager(f.url(), testAppID, testAppSecret, f.srv.Client(), log.New(logs, "", 0))
 	m.now = clock.Now
 	return m, clock, logs
+}
+
+// testEnv 是一套完整的测试环境：假飞书、TokenManager、Server，以及指向 Server 的本地 HTTP 服务。
+type testEnv struct {
+	f     *fakeFeishu
+	m     *TokenManager
+	clock *fakeClock
+	logs  *lockedBuffer
+	s     *Server
+	proxy *httptest.Server
+}
+
+func newTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	f := newFakeFeishu(t)
+	m, clock, logs := newTestManager(t, f)
+	s := NewServer(f.url(), m, f.srv.Client().Transport, log.New(logs, "", 0))
+	proxy := httptest.NewServer(s.Handler())
+	t.Cleanup(proxy.Close)
+	return &testEnv{f: f, m: m, clock: clock, logs: logs, s: s, proxy: proxy}
+}
+
+// waitForLog 等待日志出现 substr；请求日志在响应发完后才写入，需要短暂等待。
+func waitForLog(t *testing.T, logs *lockedBuffer, substr string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logs.String(), substr) {
+		if time.Now().After(deadline) {
+			t.Fatalf("日志中没有 %q：\n%s", substr, logs.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
