@@ -203,3 +203,21 @@ func waitForLog(t *testing.T, logs *lockedBuffer, substr string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+func (f *fakeFeishu) setExpire(sec int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expire = sec
+}
+
+// advancingTransport 在每次请求前把假时钟推进 d，模拟耗时较长的获取。
+type advancingTransport struct {
+	base  http.RoundTripper
+	clock *fakeClock
+	d     time.Duration
+}
+
+func (a *advancingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	a.clock.Advance(a.d)
+	return a.base.RoundTrip(req)
+}

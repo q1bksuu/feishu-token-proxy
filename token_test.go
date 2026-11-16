@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -274,5 +276,86 @@ func TestStatus(t *testing.T) {
 	s = m.Status()
 	if !s.Valid || s.ExpiresIn != 7200*time.Second || !s.LastRefresh.Equal(clock.Now()) || s.LastError != "" {
 		t.Errorf("Status after Token = %+v", s)
+	}
+}
+
+func TestToken_WaitersReuseSlowFailedFetch(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setFailCode(10003)
+	f.setTokenDelay(100 * time.Millisecond)
+	m, clock, _ := newTestManager(t, f)
+	m.client = &http.Client{Transport: &advancingTransport{base: f.srv.Client().Transport, clock: clock, d: 6 * time.Second}}
+
+	errs := make([]error, 10)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Go(func() {
+			_, _, errs[i] = m.Token(context.Background())
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err == nil || !strings.Contains(err.Error(), "10003") {
+			t.Errorf("caller %d: err = %v, want code 10003", i, err)
+		}
+	}
+	if n := f.tokenHits.Load(); n != 1 {
+		t.Errorf("tokenHits = %d, want 1", n)
+	}
+}
+
+func TestToken_CanceledCallerDoesNotFetch(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setFailCode(10003)
+	m, clock, _ := newTestManager(t, f)
+	if _, _, err := m.Token(context.Background()); err == nil {
+		t.Fatal("want first Token to fail")
+	}
+	clock.Advance(6 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := m.Token(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if n := f.tokenHits.Load(); n != 1 {
+		t.Errorf("tokenHits = %d, want 1", n)
+	}
+}
+
+func TestToken_ShortExpireThrottled(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setExpire(30)
+	m, clock, _ := newTestManager(t, f)
+
+	for i := range 20 {
+		tok, _, err := m.Token(context.Background())
+		if err != nil || tok != "t-first" {
+			t.Fatalf("Token #%d = %q, %v", i, tok, err)
+		}
+	}
+	if n := f.tokenHits.Load(); n != 1 {
+		t.Errorf("tokenHits = %d, want 1", n)
+	}
+
+	clock.Advance(6 * time.Second)
+	_, _, _ = m.Token(context.Background())
+	if n := f.tokenHits.Load(); n != 2 {
+		t.Errorf("tokenHits after backoff = %d, want 2", n)
+	}
+}
+
+func TestToken_RejectsNonPositiveExpire(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setExpire(0)
+	m, _, _ := newTestManager(t, f)
+
+	_, _, err := m.Token(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "expire") {
+		t.Fatalf("err = %v, want error mentioning expire", err)
+	}
+	_, _, _ = m.Token(context.Background())
+	if n := f.tokenHits.Load(); n != 1 {
+		t.Errorf("tokenHits = %d, want 1 (failure backoff)", n)
 	}
 }

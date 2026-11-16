@@ -20,7 +20,7 @@ const (
 	refreshCheckInterval = time.Minute
 	expirySkew           = time.Minute // 距过期不足此值即视为不可用
 	forceRefreshCooldown = 60 * time.Second
-	failureBackoff       = 5 * time.Second // 获取失败后此时间内直接返回上次的错误
+	failureBackoff       = 5 * time.Second // 一次获取结束后此时间内，Token 直接复用它的结果（失败则返回同一个错误）
 	fetchTimeout         = 10 * time.Second
 )
 
@@ -40,7 +40,7 @@ type TokenManager struct {
 	mu          sync.Mutex
 	token       string
 	expiresAt   time.Time
-	lastAttempt time.Time
+	lastDone    time.Time // 最近一次获取结束的时刻，无论成败
 	lastRefresh time.Time
 	lastErr     error
 }
@@ -66,7 +66,9 @@ func NewTokenManager(upstream *url.URL, appID, appSecret string, client *http.Cl
 }
 
 // Token 返回可用的 token 及其过期时刻；不可用时同步获取。
-// 上次获取失败且距今不足 failureBackoff 时直接返回上次的错误。
+// 最近一次获取结束不足 failureBackoff 时复用它的结果：失败则返回同一个错误，成功则返回那次拿到的 token。
+// 因此排队等锁的调用方共享刚结束的那次获取，飞书给的有效期过短时也不会每个请求都去获取。
+// 需要发起新获取而 ctx 已结束时直接返回 ctx 的错误。
 func (m *TokenManager) Token(ctx context.Context) (string, time.Time, error) {
 	if tok, exp, ok := m.usable(); ok {
 		return tok, exp, nil
@@ -78,17 +80,18 @@ func (m *TokenManager) Token(ctx context.Context) (string, time.Time, error) {
 	if tok, exp, ok := m.usable(); ok {
 		return tok, exp, nil
 	}
-	m.mu.Lock()
-	lastErr, lastAttempt := m.lastErr, m.lastAttempt
-	m.mu.Unlock()
-	if lastErr != nil && m.now().Sub(lastAttempt) < failureBackoff {
-		return "", time.Time{}, lastErr
+	if tok, exp, ok, err := m.recentResult(); ok {
+		return tok, exp, err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", time.Time{}, err
 	}
 	if err := m.fetch(ctx); err != nil {
 		return "", time.Time{}, err
 	}
-	tok, exp, _ := m.usable()
-	return tok, exp, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.token, m.expiresAt, nil
 }
 
 // ForceRefresh 在调用方发现 bad 已被飞书判定失效时调用。
@@ -102,9 +105,9 @@ func (m *TokenManager) ForceRefresh(ctx context.Context, bad string) (string, bo
 		return tok, true, nil
 	}
 	m.mu.Lock()
-	lastAttempt := m.lastAttempt
+	lastDone := m.lastDone
 	m.mu.Unlock()
-	if m.now().Sub(lastAttempt) < forceRefreshCooldown {
+	if m.now().Sub(lastDone) < forceRefreshCooldown {
 		return "", false, nil
 	}
 	if err := m.fetch(ctx); err != nil {
@@ -170,6 +173,24 @@ func (m *TokenManager) usable() (string, time.Time, bool) {
 	return m.token, m.expiresAt, ok
 }
 
+// recentResult 在最近一次获取结束不足 failureBackoff 时返回它的结果，ok 表示结果可复用。
+// 那次获取成功但 token 已过期时不可复用。
+func (m *TokenManager) recentResult() (string, time.Time, bool, error) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastDone.IsZero() || now.Sub(m.lastDone) >= failureBackoff {
+		return "", time.Time{}, false, nil
+	}
+	if m.lastErr != nil {
+		return "", time.Time{}, true, m.lastErr
+	}
+	if m.token != "" && now.Before(m.expiresAt) {
+		return m.token, m.expiresAt, true, nil
+	}
+	return "", time.Time{}, false, nil
+}
+
 type tokenResponse struct {
 	Code              int    `json:"code"`
 	Msg               string `json:"msg"`
@@ -181,14 +202,11 @@ type tokenResponse struct {
 // 请求脱离调用方 ctx 的取消，避免一个调用方断开连接让共享这次获取的其他调用方一起失败。
 func (m *TokenManager) fetch(ctx context.Context) error {
 	start := m.now()
-	m.mu.Lock()
-	m.lastAttempt = start
-	m.mu.Unlock()
-
 	tok, expire, err := m.request(ctx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastDone = m.now()
 	if err != nil {
 		m.lastErr = err
 		m.logger.Printf("获取 tenant_access_token 失败：%v", err)
@@ -231,6 +249,9 @@ func (m *TokenManager) request(ctx context.Context) (string, int, error) {
 	}
 	if r.TenantAccessToken == "" {
 		return "", 0, errors.New("飞书返回的 tenant_access_token 为空")
+	}
+	if r.Expire <= 0 {
+		return "", 0, fmt.Errorf("飞书返回的 expire 无效：%d", r.Expire)
 	}
 	return r.TenantAccessToken, r.Expire, nil
 }
