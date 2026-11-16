@@ -11,8 +11,12 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,16 +34,34 @@ jobs:
       - name: 测试
         run: go test -race ./...
 
-      - name: 交叉编译 windows/amd64
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: 交叉编译并打包全部平台
+        env:
+          # tag 构建用 tag 名作版本，其余由 build.sh 取 git describe
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: ./build.sh
 
       - uses: actions/upload-artifact@v7
         with:
-          name: feishu-token-proxy-windows-amd64
-          path: dist/
+          name: feishu-token-proxy
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
           if-no-files-found: error
 
-  # 推送 v* tag 时把产物打成 zip 发布为 GitHub Release
+  # 推送 v* tag 时把各平台压缩包和 SHA256SUMS 发布为 GitHub Release
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
@@ -49,16 +71,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: feishu-token-proxy-windows-amd64
+          name: feishu-token-proxy
           path: dist
 
-      - name: 打包并发布
+      - name: 发布
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          pkg="feishu-token-proxy-${TAG}-windows-amd64.zip"
-          (cd dist && zip -9 "../${pkg}" feishu-token-proxy.exe config.example.json)
-          sha256sum "${pkg}" > "${pkg}.sha256"
-          gh release create "${TAG}" "${pkg}" "${pkg}.sha256" \
+          cd dist
+          sha256sum *.zip *.tar.gz > SHA256SUMS
+          gh release create "${TAG}" *.zip *.tar.gz SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" --verify-tag --title "${TAG}" --generate-notes

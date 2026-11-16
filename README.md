@@ -4,15 +4,24 @@
 
 在本机代理飞书 OpenAPI，自动获取、缓存、刷新 `tenant_access_token` 并注入到请求里。调用方把飞书域名换成本地地址即可，不用自己处理 token。
 
-## Windows 部署
+## 部署
 
-1. 从仓库的 Releases 页面下载 `feishu-token-proxy-<版本>-windows-amd64.zip` 并解压，或在开发机执行 `./build.sh`（产物在 `dist/`），得到 `feishu-token-proxy.exe` 和 `config.example.json`
-2. 把这两个文件拷到服务器同一个目录，例如 `C:\feishu-token-proxy\`
-3. 把 `config.example.json` 改名为 `config.json`，填上 `app_id`、`app_secret`
-4. 双击或在命令行运行 `feishu-token-proxy.exe`。启动时会先取一次 token，凭据有误会打印原因并退出
+1. 从仓库的 Releases 页面下载对应平台的压缩包并解压，也可以自己构建（见[构建与发布](#构建与发布)）：
+
+   | 平台 | 压缩包 |
+   |---|---|
+   | Windows | `feishu-token-proxy-<版本>-windows-amd64.zip`，ARM 设备用 `windows-arm64` |
+   | Linux | `feishu-token-proxy-<版本>-linux-amd64.tar.gz`，ARM 服务器用 `linux-arm64` |
+   | macOS | `feishu-token-proxy-<版本>-darwin-arm64.tar.gz`，Intel 机型用 `darwin-amd64` |
+
+2. 把解压出的目录放到服务器上，例如 Windows 的 `C:\feishu-token-proxy\`、Linux 的 `/opt/feishu-token-proxy/`
+3. 把目录里的 `config.example.json` 改名为 `config.json`，填上 `app_id`、`app_secret`
+4. 运行：Windows 双击或在命令行运行 `feishu-token-proxy.exe`；Linux、macOS 在该目录执行 `./feishu-token-proxy`。启动时会先取一次 token，凭据有误会打印原因并退出
 5. 验证：`curl http://127.0.0.1:18080/health`
 
-默认读取 exe 同目录的 `config.json`，也可以用 `-config <路径>` 指定。
+默认读取程序同目录的 `config.json`，也可以用 `-config <路径>` 指定。
+
+程序没有做 macOS 签名，用浏览器下载的会被系统拦截，首次运行前在程序目录执行 `xattr -d com.apple.quarantine feishu-token-proxy` 解除隔离。
 
 ## 配置项
 
@@ -88,13 +97,21 @@ token 可用时返回 200，否则返回 503，`status` 为 `no_token`。这个�
 服务器访问外网需要走代理时，启动前设置环境变量：
 
 ```bat
+rem Windows
 set HTTPS_PROXY=http://proxy.example.com:8080
 feishu-token-proxy.exe
+```
+
+```bash
+# Linux、macOS
+HTTPS_PROXY=http://proxy.example.com:8080 ./feishu-token-proxy
 ```
 
 调用方所在环境如果设置了 `HTTP_PROXY`，记得把 `127.0.0.1` 加进 `NO_PROXY`，否则调用方会把发给本服务的请求也发给代理。
 
 ## 开机自启（可选）
+
+### Windows
 
 需要常驻时用 [WinSW](https://github.com/winsw/winsw) 包装，程序本身不用改。把 `WinSW-x64.exe` 改名为 `feishu-token-proxy-service.exe`，和下面的 `feishu-token-proxy-service.xml` 一起放到 exe 同目录：
 
@@ -112,14 +129,64 @@ feishu-token-proxy.exe
 
 然后以管理员身份执行 `feishu-token-proxy-service.exe install`、`feishu-token-proxy-service.exe start`。
 
+### Linux
+
+用 systemd 托管。把下面的内容保存为 `/etc/systemd/system/feishu-token-proxy.service`，`User` 换成能读取 `config.json` 的账号：
+
+```ini
+[Unit]
+Description=feishu-token-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=feishu
+ExecStart=/opt/feishu-token-proxy/feishu-token-proxy -config /opt/feishu-token-proxy/config.json
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+然后执行 `sudo systemctl daemon-reload && sudo systemctl enable --now feishu-token-proxy`，日志用 `journalctl -u feishu-token-proxy` 查看。
+
+### macOS
+
+用 launchd 托管。把下面的内容保存为 `~/Library/LaunchAgents/feishu-token-proxy.plist`，路径换成程序实际所在目录：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>feishu-token-proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/feishu-token-proxy/feishu-token-proxy</string>
+    <string>-config</string>
+    <string>/opt/feishu-token-proxy/config.json</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/opt/feishu-token-proxy/proxy.log</string>
+  <key>StandardErrorPath</key><string>/opt/feishu-token-proxy/proxy.log</string>
+</dict>
+</plist>
+```
+
+然后执行 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/feishu-token-proxy.plist`。
+
 ## 安全提示
 
-- `config.json` 含 `app_secret`，用 NTFS 权限限制只有运行服务的账号和管理员能读
+- `config.json` 含 `app_secret`，只让运行服务的账号能读：Windows 用 NTFS 权限限制为该账号和管理员，Linux、macOS 执行 `chmod 600 config.json`
 - 服务只监听本机回环地址，没有调用方鉴权，本机任何进程都能通过它以应用身份调用飞书接口；浏览器发起的跨站请求会被拒绝
 
 ## 构建与发布
 
-GitHub Actions 在推送 master 和 PR 时运行 `go vet`、`go test -race` 并交叉编译 windows/amd64，产物在对应运行页的 Artifacts 里。推送 `v*` tag 时额外把产物打成 zip（附 sha256）发布到 Releases：
+本地构建需要 Go 1.25+、bash、zip、tar。`./build.sh` 交叉编译全部平台，也可以只构建指定平台，如 `./build.sh windows/amd64 linux/amd64`。产物在 `dist/`，每个平台一个目录和同名压缩包。
+
+GitHub Actions 在推送 master 和 PR 时先在 Linux、macOS、Windows 上运行 `go vet`、`go test -race`，再交叉编译全部平台，压缩包在对应运行页的 Artifacts 里。推送 `v*` tag 时额外把压缩包和 `SHA256SUMS` 发布到 Releases：
 
 ```bash
 git tag v0.1.0
