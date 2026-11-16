@@ -44,6 +44,15 @@ func NewServer(upstream *url.URL, tokens *TokenManager, transport http.RoundTrip
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/open-apis/", s.forward)
+	mux.HandleFunc("GET /token", s.handleToken)
+	mux.HandleFunc("GET /health", s.handleHealth)
+	// "/" 兜底会匹配任意方法，/token、/health 的其他方法在这里显式返回 405
+	methodNotAllowed := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeProxyError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+	}
+	mux.HandleFunc("/token", methodNotAllowed)
+	mux.HandleFunc("/health", methodNotAllowed)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeProxyError(w, http.StatusNotFound, "未知路径：仅支持 /open-apis/*、/token、/health")
 	})
