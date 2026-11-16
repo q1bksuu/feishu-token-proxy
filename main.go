@@ -38,7 +38,7 @@ func run() int {
 			return 1
 		}
 		defer f.Close()
-		out = io.MultiWriter(os.Stdout, f)
+		out = teeWriter{os.Stdout, f}
 	}
 	logger := log.New(out, "", log.LstdFlags)
 
@@ -89,6 +89,17 @@ func run() int {
 	}
 	logger.Printf("已退出")
 	return 0
+}
+
+// teeWriter 把每次写入依次交给所有 writer，某个 writer 出错时其余照常写入。
+// 无控制台启动（如任务计划程序）时 stdout 句柄无效，日志文件仍能写入。
+type teeWriter []io.Writer
+
+func (t teeWriter) Write(p []byte) (int, error) {
+	for _, w := range t {
+		_, _ = w.Write(p)
+	}
+	return len(p), nil
 }
 
 // defaultConfigPath 返回 exe 所在目录下的 config.json。
