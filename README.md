@@ -6,8 +6,8 @@
 
 ## Windows 部署
 
-1. 在开发机执行 `./build.sh`，得到 `dist/feishu-token-proxy.exe` 和 `dist/config.example.json`
-2. 把 `dist/` 里的两个文件拷到服务器同一个目录，例如 `C:\feishu-token-proxy\`
+1. 从仓库的 Releases 页面下载 `feishu-token-proxy-<版本>-windows-amd64.zip` 并解压，或在开发机执行 `./build.sh`（产物在 `dist/`），得到 `feishu-token-proxy.exe` 和 `config.example.json`
+2. 把这两个文件拷到服务器同一个目录，例如 `C:\feishu-token-proxy\`
 3. 把 `config.example.json` 改名为 `config.json`，填上 `app_id`、`app_secret`
 4. 双击或在命令行运行 `feishu-token-proxy.exe`。启动时会先取一次 token，凭据有误会打印原因并退出
 5. 验证：`curl http://127.0.0.1:18080/health`
@@ -116,6 +116,15 @@ feishu-token-proxy.exe
 
 - `config.json` 含 `app_secret`，用 NTFS 权限限制只有运行服务的账号和管理员能读
 - 服务只监听本机回环地址，没有调用方鉴权，本机任何进程都能通过它以应用身份调用飞书接口；浏览器发起的跨站请求会被拒绝
+
+## 构建与发布
+
+GitHub Actions 在推送 master 和 PR 时运行 `go vet`、`go test -race` 并交叉编译 windows/amd64，产物在对应运行页的 Artifacts 里。推送 `v*` tag 时额外把产物打成 zip（附 sha256）发布到 Releases：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## 许可证
 
