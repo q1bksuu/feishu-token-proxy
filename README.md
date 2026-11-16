@@ -1,5 +1,7 @@
 # feishu-token-proxy
 
+> 个人开源项目，非飞书（Feishu / Lark）官方出品，与飞书无隶属或背书关系。
+
 在本机代理飞书 OpenAPI，自动获取、缓存、刷新 `tenant_access_token` 并注入到请求里。调用方把飞书域名换成本地地址即可，不用自己处理 token。
 
 ## Windows 部署
@@ -114,3 +116,7 @@ feishu-token-proxy.exe
 
 - `config.json` 含 `app_secret`，用 NTFS 权限限制只有运行服务的账号和管理员能读
 - 服务只监听本机回环地址，没有调用方鉴权，本机任何进程都能通过它以应用身份调用飞书接口；浏览器发起的跨站请求会被拒绝
+
+## 许可证
+
+[MIT](LICENSE)
