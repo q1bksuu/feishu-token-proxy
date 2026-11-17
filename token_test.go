@@ -41,11 +41,18 @@ func TestToken_RefetchesNearExpiry(t *testing.T) {
 
 	first, _, _ := m.Token(ctx)
 	require.Equal(t, "t-first", first)
-	clock.Advance(7200*time.Second - 59*time.Second)
+
+	clock.Advance(7200*time.Second - 5*time.Minute - time.Second)
 	tok, _, err := m.Token(ctx)
 	assert.NoError(t, err)
-	assert.Equal(t, "t-second", tok)
-	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
+	assert.Equal(t, "t-first", tok, "5min+1s left")
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits with 5min+1s left")
+
+	clock.Advance(2 * time.Second)
+	tok, _, err = m.Token(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, "t-second", tok, "4min59s left")
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits with 4min59s left")
 }
 
 func TestToken_ConcurrentCallersShareOneFetch(t *testing.T) {
@@ -222,6 +229,11 @@ func TestStatus(t *testing.T) {
 	assert.Equal(t, 7200*time.Second, s.ExpiresIn, "ExpiresIn after Token")
 	assert.WithinDuration(t, clock.Now(), s.LastRefresh, 0, "LastRefresh after Token")
 	assert.Empty(t, s.LastError, "LastError after Token")
+
+	clock.Advance(7200*time.Second - 5*time.Minute + time.Second)
+	s = m.Status()
+	assert.False(t, s.Valid, "Valid with 4min59s left")
+	assert.Equal(t, 5*time.Minute-time.Second, s.ExpiresIn, "ExpiresIn with 4min59s left")
 }
 
 func TestToken_WaitersReuseSlowFailedFetch(t *testing.T) {

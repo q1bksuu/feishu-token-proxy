@@ -18,7 +18,7 @@ const (
 	tokenPath            = "/open-apis/auth/v3/tenant_access_token/internal"
 	refreshBefore        = 25 * time.Minute // 剩余有效期不足此值时后台换新
 	refreshCheckInterval = time.Minute
-	expirySkew           = time.Minute // 距过期不足此值即视为不可用
+	expirySkew           = 5 * time.Minute // 距过期不足此值即视为不可用
 	forceRefreshCooldown = 60 * time.Second
 	failureBackoff       = 5 * time.Second // 一次获取结束后此时间内，Token 直接复用它的结果（失败则返回同一个错误）
 	fetchTimeout         = 10 * time.Second
