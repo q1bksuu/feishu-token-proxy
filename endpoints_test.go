@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTokenEndpoint(t *testing.T) {
@@ -21,35 +23,25 @@ func TestTokenEndpoint(t *testing.T) {
 	get := func() (int, tokenResp) {
 		t.Helper()
 		resp, err := http.Get(env.proxy.URL + "/token")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		var r tokenResp
-		if err := json.Unmarshal(readAll(t, resp), &r); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, json.Unmarshal(readAll(t, resp), &r))
 		return resp.StatusCode, r
 	}
 
 	status, r := get()
 	want := tokenResp{Code: 0, Msg: "ok", TenantAccessToken: "t-first", Expire: 7200}
-	if status != http.StatusOK || r != want {
-		t.Errorf("GET /token = %d %+v, want 200 %+v", status, r, want)
-	}
+	assert.Equal(t, http.StatusOK, status, "GET /token status")
+	assert.Equal(t, want, r, "GET /token")
 
 	env.clock.Advance(100 * time.Second)
-	if _, r = get(); r.Expire != 7100 {
-		t.Errorf("expire after 100s = %d, want 7100", r.Expire)
-	}
+	_, r = get()
+	assert.Equal(t, 7100, r.Expire, "expire after 100s")
 
 	resp, err := http.Post(env.proxy.URL+"/token", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	readAll(t, resp)
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("POST /token = %d, want 405", resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode, "POST /token")
 }
 
 func TestTokenEndpoint_Failure(t *testing.T) {
@@ -57,16 +49,12 @@ func TestTokenEndpoint_Failure(t *testing.T) {
 	env.f.setFailCode(10003)
 
 	resp, err := http.Get(env.proxy.URL + "/token")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", resp.StatusCode)
-	}
-	if code, msg := proxyErr(t, body); code != -1 || !strings.Contains(msg, "10003") {
-		t.Errorf("error = %d %q", code, msg)
-	}
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	code, msg := proxyErr(t, body)
+	assert.Equal(t, -1, code)
+	assert.Contains(t, msg, "10003")
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -81,34 +69,25 @@ func TestHealthEndpoint(t *testing.T) {
 	get := func() (int, healthResp, string) {
 		t.Helper()
 		resp, err := http.Get(env.proxy.URL + "/health")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		body := readAll(t, resp)
 		var h healthResp
-		if err := json.Unmarshal(body, &h); err != nil {
-			t.Fatalf("health 响应不是 JSON：%q", body)
-		}
+		require.NoError(t, json.Unmarshal(body, &h), "health 响应不是 JSON：%q", body)
 		return resp.StatusCode, h, string(body)
 	}
 
 	status, h, _ := get()
-	if status != http.StatusServiceUnavailable || h.Status != "no_token" || h.TokenExpiresIn != 0 || h.LastRefresh != "" {
-		t.Errorf("before token: %d %+v", status, h)
-	}
-	if n := env.f.tokenHits.Load(); n != 0 {
-		t.Errorf("health triggered token fetch: tokenHits = %d", n)
-	}
+	assert.Equal(t, http.StatusServiceUnavailable, status, "before token: status")
+	assert.Equal(t, "no_token", h.Status, "before token: status field")
+	assert.Zero(t, h.TokenExpiresIn, "before token: token_expires_in")
+	assert.Empty(t, h.LastRefresh, "before token: last_refresh")
+	assert.Zero(t, env.f.tokenHits.Load(), "health triggered token fetch")
 
-	if _, _, err := env.m.Token(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := env.m.Token(context.Background())
+	require.NoError(t, err)
 	status, h, body := get()
 	want := healthResp{Status: "ok", TokenExpiresIn: 7200, LastRefresh: env.clock.Now().Format(time.RFC3339)}
-	if status != http.StatusOK || h != want {
-		t.Errorf("after token: %d %+v, want 200 %+v", status, h, want)
-	}
-	if strings.Contains(body, "t-first") {
-		t.Errorf("health leaks token: %s", body)
-	}
+	assert.Equal(t, http.StatusOK, status, "after token: status")
+	assert.Equal(t, want, h, "after token")
+	assert.NotContains(t, body, "t-first", "health leaks token")
 }

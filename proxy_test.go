@@ -13,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // apiCall 是假飞书 api 收到的一次请求。
@@ -55,9 +58,7 @@ func readAll(t *testing.T, resp *http.Response) []byte {
 	t.Helper()
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("读取响应失败：%v", err)
-	}
+	require.NoError(t, err, "读取响应失败")
 	return b
 }
 
@@ -68,9 +69,7 @@ func proxyErr(t *testing.T, body []byte) (int, string) {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if err := json.Unmarshal(body, &e); err != nil {
-		t.Fatalf("响应不是 JSON：%q", body)
-	}
+	require.NoError(t, json.Unmarshal(body, &e), "响应不是 JSON：%q", body)
 	return e.Code, e.Msg
 }
 
@@ -115,36 +114,22 @@ func TestForward_InjectsTokenAndStripsHeaders(t *testing.T) {
 	req.Header.Set("X-Keep", "1")
 	req.Header.Set("Accept-Encoding", "br")
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
 
 	calls := rec.all()
-	if len(calls) != 1 {
-		t.Fatalf("api calls = %d, want 1", len(calls))
-	}
+	require.Len(t, calls, 1, "api calls")
 	h := calls[0].header
-	if got := h.Get("Authorization"); got != "Bearer t-first" {
-		t.Errorf("upstream Authorization = %q", got)
-	}
-	if h.Get("X-Keep") != "1" {
-		t.Errorf("upstream X-Keep = %q", h.Get("X-Keep"))
-	}
-	if h.Get("X-Drop") != "" {
-		t.Errorf("upstream X-Drop = %q, want hop-by-hop removed", h.Get("X-Drop"))
-	}
-	if h.Get("Accept-Encoding") == "br" {
-		t.Errorf("upstream Accept-Encoding = br, want caller value removed")
-	}
+	assert.Equal(t, "Bearer t-first", h.Get("Authorization"), "upstream Authorization")
+	assert.Equal(t, "1", h.Get("X-Keep"), "upstream X-Keep")
+	assert.Empty(t, h.Get("X-Drop"), "upstream X-Drop, want hop-by-hop removed")
+	assert.NotEqual(t, "br", h.Get("Accept-Encoding"), "upstream Accept-Encoding, want caller value removed")
 
-	if resp.StatusCode != http.StatusCreated || resp.Header.Get("X-Upstream") != "yes" || string(body) != "ok" {
-		t.Errorf("caller got %d %v %q", resp.StatusCode, resp.Header, body)
-	}
+	assert.Equal(t, http.StatusCreated, resp.StatusCode, "caller status")
+	assert.Equal(t, "yes", resp.Header.Get("X-Upstream"), "caller X-Upstream")
+	assert.Equal(t, "ok", string(body), "caller body")
 	waitForLog(t, env.logs, "GET /open-apis/im/v1/chats 201")
-	if strings.Contains(env.logs.String(), "t-first") {
-		t.Errorf("logs leak token: %s", env.logs.String())
-	}
+	assert.NotContains(t, env.logs.String(), "t-first", "logs leak token")
 }
 
 func TestForward_PreservesMethodPathQueryBody(t *testing.T) {
@@ -160,9 +145,7 @@ func TestForward_PreservesMethodPathQueryBody(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, env.proxy.URL+"/open-apis/im/v1/messages?"+rawQuery, strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	readAll(t, resp)
 
 	var bin []byte
@@ -179,29 +162,21 @@ func TestForward_PreservesMethodPathQueryBody(t *testing.T) {
 	req, _ = http.NewRequest(http.MethodPut, env.proxy.URL+"/open-apis/im/v1/files", bytes.NewReader(multipartBody))
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	readAll(t, resp)
 
 	calls := rec.all()
-	if len(calls) != 2 {
-		t.Fatalf("api calls = %d, want 2", len(calls))
-	}
+	require.Len(t, calls, 2, "api calls")
 	c := calls[0]
-	if c.method != http.MethodPost || c.path != "/open-apis/im/v1/messages" || c.rawQuery != rawQuery {
-		t.Errorf("upstream got %s %s ? %s", c.method, c.path, c.rawQuery)
-	}
-	if string(c.body) != jsonBody || c.header.Get("Content-Type") != "application/json; charset=utf-8" {
-		t.Errorf("upstream body %q, Content-Type %q", c.body, c.header.Get("Content-Type"))
-	}
+	assert.Equal(t, http.MethodPost, c.method, "json method")
+	assert.Equal(t, "/open-apis/im/v1/messages", c.path, "json path")
+	assert.Equal(t, rawQuery, c.rawQuery, "json rawQuery")
+	assert.Equal(t, jsonBody, string(c.body), "json body")
+	assert.Equal(t, "application/json; charset=utf-8", c.header.Get("Content-Type"), "json Content-Type")
 	c = calls[1]
-	if c.method != http.MethodPut || !bytes.Equal(c.body, multipartBody) {
-		t.Errorf("multipart: method %s, body equal %v", c.method, bytes.Equal(c.body, multipartBody))
-	}
-	if c.header.Get("Content-Type") != mw.FormDataContentType() {
-		t.Errorf("multipart Content-Type = %q", c.header.Get("Content-Type"))
-	}
+	assert.Equal(t, http.MethodPut, c.method, "multipart method")
+	assert.Equal(t, multipartBody, c.body, "multipart body")
+	assert.Equal(t, mw.FormDataContentType(), c.header.Get("Content-Type"), "multipart Content-Type")
 }
 
 func TestForward_RejectsUnknownPath(t *testing.T) {
@@ -210,19 +185,12 @@ func TestForward_RejectsUnknownPath(t *testing.T) {
 	env.f.setAPI(func(w http.ResponseWriter, r *http.Request) { rec.record(r) })
 
 	resp, err := http.Get(env.proxy.URL + "/foo")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", resp.StatusCode)
-	}
-	if code, _ := proxyErr(t, body); code != -1 {
-		t.Errorf("code = %d, want -1", code)
-	}
-	if n := len(rec.all()); n != 0 {
-		t.Errorf("api calls = %d, want 0", n)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	code, _ := proxyErr(t, body)
+	assert.Equal(t, -1, code)
+	assert.Empty(t, rec.all(), "api calls")
 }
 
 func TestForward_BodyTooLarge(t *testing.T) {
@@ -232,19 +200,12 @@ func TestForward_BodyTooLarge(t *testing.T) {
 	env.f.setAPI(func(w http.ResponseWriter, r *http.Request) { rec.record(r) })
 
 	resp, err := http.Post(env.proxy.URL+"/open-apis/im/v1/messages", "text/plain", strings.NewReader("01234567890"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Errorf("status = %d, want 413", resp.StatusCode)
-	}
-	if code, _ := proxyErr(t, body); code != -1 {
-		t.Errorf("code = %d, want -1", code)
-	}
-	if n := len(rec.all()); n != 0 {
-		t.Errorf("api calls = %d, want 0", n)
-	}
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	code, _ := proxyErr(t, body)
+	assert.Equal(t, -1, code)
+	assert.Empty(t, rec.all(), "api calls")
 }
 
 func TestForward_RetriesOnceOnInvalidToken(t *testing.T) {
@@ -252,29 +213,19 @@ func TestForward_RetriesOnceOnInvalidToken(t *testing.T) {
 	env.f.setTokens("t-first", "t-second")
 	rec := &apiRecorder{}
 	env.f.setAPI(invalidTokenAPI(rec, false))
-	if _, _, err := env.m.Token(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := env.m.Token(context.Background())
+	require.NoError(t, err)
 	env.clock.Advance(61 * time.Second)
 
 	resp, err := http.Post(env.proxy.URL+"/open-apis/im/v1/messages", "text/plain", strings.NewReader("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusOK || string(body) != "hello" {
-		t.Errorf("caller got %d %q, want 200 hello", resp.StatusCode, body)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "caller status")
+	assert.Equal(t, "hello", string(body), "caller body")
 	calls := rec.all()
-	if len(calls) != 2 {
-		t.Fatalf("api calls = %d, want 2", len(calls))
-	}
-	if got := calls[1].header.Get("Authorization"); got != "Bearer t-second" {
-		t.Errorf("retry Authorization = %q", got)
-	}
-	if string(calls[1].body) != "hello" {
-		t.Errorf("retry body = %q", calls[1].body)
-	}
+	require.Len(t, calls, 2, "api calls")
+	assert.Equal(t, "Bearer t-second", calls[1].header.Get("Authorization"), "retry Authorization")
+	assert.Equal(t, "hello", string(calls[1].body), "retry body")
 	waitForLog(t, env.logs, "retried=true")
 }
 
@@ -283,24 +234,16 @@ func TestForward_NoRetryWithinCooldown(t *testing.T) {
 	env.f.setTokens("t-first", "t-second")
 	rec := &apiRecorder{}
 	env.f.setAPI(invalidTokenAPI(rec, false))
-	if _, _, err := env.m.Token(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := env.m.Token(context.Background())
+	require.NoError(t, err)
 
 	resp, err := http.Post(env.proxy.URL+"/open-apis/im/v1/messages", "text/plain", strings.NewReader("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "99991663") {
-		t.Errorf("caller got %d %q, want 400 with 99991663", resp.StatusCode, body)
-	}
-	if n := len(rec.all()); n != 1 {
-		t.Errorf("api calls = %d, want 1", n)
-	}
-	if n := env.f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1", n)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "caller status")
+	assert.Contains(t, string(body), "99991663", "caller body")
+	assert.Len(t, rec.all(), 1, "api calls")
+	assert.EqualValues(t, 1, env.f.tokenHits.Load(), "tokenHits")
 }
 
 func TestForward_RetryWorksWhenCallerAcceptsGzip(t *testing.T) {
@@ -308,27 +251,19 @@ func TestForward_RetryWorksWhenCallerAcceptsGzip(t *testing.T) {
 	env.f.setTokens("t-first", "t-second")
 	rec := &apiRecorder{}
 	env.f.setAPI(invalidTokenAPI(rec, true))
-	if _, _, err := env.m.Token(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := env.m.Token(context.Background())
+	require.NoError(t, err)
 	env.clock.Advance(61 * time.Second)
 
 	req, _ := http.NewRequest(http.MethodPost, env.proxy.URL+"/open-apis/im/v1/messages", strings.NewReader("hello"))
 	req.Header.Set("Accept-Encoding", "gzip")
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if n := len(rec.all()); n != 2 {
-		t.Errorf("api calls = %d, want 2", n)
-	}
-	if resp.StatusCode != http.StatusOK || string(body) != "hello" {
-		t.Errorf("caller got %d %q, want 200 hello", resp.StatusCode, body)
-	}
-	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
-		t.Errorf("Content-Encoding = %q, want none", ce)
-	}
+	assert.Len(t, rec.all(), 2, "api calls")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "caller status")
+	assert.Equal(t, "hello", string(body), "caller body")
+	assert.Empty(t, resp.Header.Get("Content-Encoding"), "Content-Encoding")
 }
 
 func TestForward_PassesThroughOtherErrors(t *testing.T) {
@@ -341,16 +276,11 @@ func TestForward_PassesThroughOtherErrors(t *testing.T) {
 	})
 
 	resp, err := http.Get(env.proxy.URL + "/open-apis/im/v1/chats")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusBadRequest || string(body) != errBody {
-		t.Errorf("caller got %d %q", resp.StatusCode, body)
-	}
-	if n := env.f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1", n)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "caller status")
+	assert.Equal(t, errBody, string(body), "caller body")
+	assert.EqualValues(t, 1, env.f.tokenHits.Load(), "tokenHits")
 }
 
 func TestForward_PassesThroughLargeAndNonJSONErrors(t *testing.T) {
@@ -364,25 +294,16 @@ func TestForward_PassesThroughLargeAndNonJSONErrors(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write(large)
 		})
-		if _, _, err := env.m.Token(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+		_, _, err := env.m.Token(context.Background())
+		require.NoError(t, err)
 		env.clock.Advance(61 * time.Second)
 
 		resp, err := http.Get(env.proxy.URL + "/open-apis/im/v1/chats")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		body := readAll(t, resp)
-		if resp.StatusCode != http.StatusInternalServerError {
-			t.Errorf("status = %d, want 500", resp.StatusCode)
-		}
-		if sha256.Sum256(body) != sha256.Sum256(large) {
-			t.Errorf("body differs: got %d bytes, want %d", len(body), len(large))
-		}
-		if n := len(rec.all()); n != 1 {
-			t.Errorf("api calls = %d, want 1", n)
-		}
+		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		assert.Equal(t, sha256.Sum256(large), sha256.Sum256(body), "body hash: got %d bytes, want %d", len(body), len(large))
+		assert.Len(t, rec.all(), 1, "api calls")
 	})
 
 	t.Run("非 JSON 错误页", func(t *testing.T) {
@@ -394,13 +315,11 @@ func TestForward_PassesThroughLargeAndNonJSONErrors(t *testing.T) {
 			_, _ = w.Write([]byte(page))
 		})
 		resp, err := http.Get(env.proxy.URL + "/open-apis/im/v1/chats")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		body := readAll(t, resp)
-		if resp.StatusCode != http.StatusBadGateway || string(body) != page || resp.Header.Get("Content-Type") != "text/html" {
-			t.Errorf("caller got %d %q %q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
-		}
+		assert.Equal(t, http.StatusBadGateway, resp.StatusCode, "caller status")
+		assert.Equal(t, page, string(body), "caller body")
+		assert.Equal(t, "text/html", resp.Header.Get("Content-Type"), "caller Content-Type")
 	})
 }
 
@@ -421,9 +340,7 @@ func TestForward_StreamsLargeResponse(t *testing.T) {
 	})
 
 	resp, err := http.Get(env.proxy.URL + "/open-apis/drive/v1/files/x/download")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	gotHead := make(chan []byte, 1)
@@ -439,18 +356,15 @@ func TestForward_StreamsLargeResponse(t *testing.T) {
 	select {
 	case first = <-gotHead:
 	case <-time.After(5 * time.Second):
-		t.Fatal("响应未流式透传")
+		require.FailNow(t, "响应未流式透传")
 	}
 	closeRelease()
 	rest, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got := append(first, rest...)
 	want := append(append([]byte(nil), head...), tail...)
-	if len(got) != len(want) || sha256.Sum256(got) != sha256.Sum256(want) {
-		t.Errorf("body length %d, want %d; hashes equal %v", len(got), len(want), sha256.Sum256(got) == sha256.Sum256(want))
-	}
+	assert.Equal(t, len(want), len(got), "body length")
+	assert.Equal(t, sha256.Sum256(want), sha256.Sum256(got), "body hash: got %d bytes, want %d", len(got), len(want))
 }
 
 func TestForward_TokenUnavailable(t *testing.T) {
@@ -458,41 +372,29 @@ func TestForward_TokenUnavailable(t *testing.T) {
 	env.f.setFailCode(10003)
 
 	resp, err := http.Get(env.proxy.URL + "/open-apis/im/v1/chats")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 	code, msg := proxyErr(t, body)
-	if code != -1 || !strings.Contains(msg, "tenant_access_token") {
-		t.Errorf("error = %d %q", code, msg)
-	}
+	assert.Equal(t, -1, code)
+	assert.Contains(t, msg, "tenant_access_token")
 	waitForLog(t, env.logs, "GET /open-apis/im/v1/chats 502")
-	if strings.Contains(string(body), testAppSecret) || strings.Contains(env.logs.String(), testAppSecret) {
-		t.Errorf("secret leaked: body %q logs %q", body, env.logs.String())
-	}
+	assert.NotContains(t, string(body), testAppSecret, "secret leaked in body")
+	assert.NotContains(t, env.logs.String(), testAppSecret, "secret leaked in logs")
 }
 
 func TestForward_UpstreamUnreachable(t *testing.T) {
 	env := newTestEnv(t)
-	if _, _, err := env.m.Token(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := env.m.Token(context.Background())
+	require.NoError(t, err)
 	env.f.srv.Close()
 
 	resp, err := http.Get(env.proxy.URL + "/open-apis/im/v1/chats")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	body := readAll(t, resp)
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", resp.StatusCode)
-	}
-	if code, _ := proxyErr(t, body); code != -1 {
-		t.Errorf("code = %d, want -1", code)
-	}
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	code, _ := proxyErr(t, body)
+	assert.Equal(t, -1, code)
 }
 
 func TestForward_PreservesRawQueryVerbatim(t *testing.T) {
@@ -505,12 +407,9 @@ func TestForward_PreservesRawQueryVerbatim(t *testing.T) {
 
 	const rawQuery = "query=a;b&discount=100%&page_size=10"
 	resp, err := http.Get(env.proxy.URL + "/open-apis/search/v1/x?" + rawQuery)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	readAll(t, resp)
 	calls := rec.all()
-	if len(calls) != 1 || calls[0].rawQuery != rawQuery {
-		t.Errorf("upstream calls %d, rawQuery %q, want %q", len(calls), calls[0].rawQuery, rawQuery)
-	}
+	require.Len(t, calls, 1, "api calls")
+	assert.Equal(t, rawQuery, calls[0].rawQuery)
 }
