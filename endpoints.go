@@ -20,7 +20,8 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}{0, "ok", tok, int(expiresAt.Sub(s.tokens.now()).Seconds())})
 }
 
-// handleHealth 只读取 TokenManager 的状态，token 可用时返回 200，否则 503。
+// handleHealth 只读取 TokenManager 的状态：token 可用时 200 ok；
+// token 不可用但最近一次获取成功（如懒刷新模式下闲置过期）时 200 idle；最近一次获取失败或从未获取过时 503 no_token。
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	st := s.tokens.Status()
 	resp := struct {
@@ -37,7 +38,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp.LastRefresh = st.LastRefresh.Format(time.RFC3339)
 	}
 	status := http.StatusOK
-	if !st.Valid {
+	switch {
+	case st.Valid:
+	case st.LastError == "" && !st.LastRefresh.IsZero():
+		resp.Status = "idle"
+	default:
 		resp.Status = "no_token"
 		status = http.StatusServiceUnavailable
 	}

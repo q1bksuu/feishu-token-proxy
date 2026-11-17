@@ -81,7 +81,7 @@ curl http://127.0.0.1:18080/health
 # {"status":"ok","token_expires_in":5400,"last_refresh":"2026-11-16T10:00:00+08:00","last_error":""}
 ```
 
-token 可用时返回 200，否则返回 503，`status` 为 `no_token`。这个接口只读状态，不会触发获取 token，也不返回 token 本身。
+token 可用时返回 200，`status` 为 `ok`；token 不可用（剩余不足 5 分钟或已过期）但最近一次获取没有失败时返回 200，`status` 为 `idle`，开启 `lazy_refresh` 后闲置时常见；最近一次获取失败、或还从未获取过时返回 503，`status` 为 `no_token`。这个接口只读状态，不会触发获取 token，也不返回 token 本身。
 
 ## 行为说明
 
