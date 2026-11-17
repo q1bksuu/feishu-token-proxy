@@ -25,8 +25,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          # 项目只用标准库，没有 go.sum，关掉依赖缓存
-          cache: false
 
       - name: 静态检查
         run: go vet ./...
@@ -45,7 +43,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: false
 
       - name: 交叉编译并打包全部平台
         env:

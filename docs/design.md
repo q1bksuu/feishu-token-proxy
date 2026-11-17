@@ -27,7 +27,7 @@ Windows 服务器上的本地进程要调飞书 OpenAPI，但它们自己处理�
 
 ## 约束
 
-- Go 1.25，只用标准库，交叉编译 `GOOS=windows GOARCH=amd64`
+- Go 1.25，运行时只用标准库，测试使用 testify；交叉编译 `GOOS=windows GOARCH=amd64`
 - 只允许监听回环地址（`127.0.0.1` / `::1` / `localhost`），配置成别的地址启动直接报错退出
 
 ## 方案

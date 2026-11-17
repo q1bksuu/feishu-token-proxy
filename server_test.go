@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServer_RejectsNonLocalHostAndBrowserRequests(t *testing.T) {
@@ -29,22 +32,16 @@ func TestServer_RejectsNonLocalHostAndBrowserRequests(t *testing.T) {
 				req.Header.Set(k, v)
 			}
 			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			body := readAll(t, resp)
-			if resp.StatusCode != http.StatusForbidden {
-				t.Errorf("%s %s: status = %d, want 403", c.name, path, resp.StatusCode)
+			if !assert.Equal(t, http.StatusForbidden, resp.StatusCode, "%s %s", c.name, path) {
 				continue
 			}
-			if code, _ := proxyErr(t, body); code != -1 {
-				t.Errorf("%s %s: code = %d, want -1", c.name, path, code)
-			}
+			code, _ := proxyErr(t, body)
+			assert.Equal(t, -1, code, "%s %s", c.name, path)
 		}
 	}
-	if n := env.f.tokenHits.Load(); n != 0 {
-		t.Errorf("rejected requests triggered token fetch: tokenHits = %d", n)
-	}
+	assert.Zero(t, env.f.tokenHits.Load(), "rejected requests triggered token fetch")
 
 	allowed := []struct {
 		name   string
@@ -64,21 +61,15 @@ func TestServer_RejectsNonLocalHostAndBrowserRequests(t *testing.T) {
 			req.Header.Set(k, v)
 		}
 		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		readAll(t, resp)
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("%s: status = %d, want 200", c.name, resp.StatusCode)
-		}
+		assert.Equal(t, http.StatusOK, resp.StatusCode, c.name)
 	}
 }
 
 func mustPort(t *testing.T, raw string) string {
 	t.Helper()
 	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return u.Port()
 }

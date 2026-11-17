@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"log"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 type failingWriter struct{}
@@ -17,7 +18,6 @@ func TestTeeWriter_KeepsWritingAfterOneWriterFails(t *testing.T) {
 	logger := log.New(teeWriter{failingWriter{}, &file}, "", 0)
 	logger.Printf("第一行")
 	logger.Printf("第二行")
-	if got := file.String(); !strings.Contains(got, "第一行") || !strings.Contains(got, "第二行") {
-		t.Errorf("file = %q, want both lines", got)
-	}
+	assert.Contains(t, file.String(), "第一行")
+	assert.Contains(t, file.String(), "第二行")
 }

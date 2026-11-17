@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -195,13 +197,9 @@ func newTestEnv(t *testing.T) *testEnv {
 // waitForLog 等待日志出现 substr；请求日志在响应发完后才写入，需要短暂等待。
 func waitForLog(t *testing.T, logs *lockedBuffer, substr string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logs.String(), substr) {
-		if time.Now().After(deadline) {
-			t.Fatalf("日志中没有 %q：\n%s", substr, logs.String())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Contains(c, logs.String(), substr)
+	}, 2*time.Second, 5*time.Millisecond)
 }
 
 func (f *fakeFeishu) setExpire(sec int) {
