@@ -3,5 +3,6 @@
   "app_secret": "xxx",
   "listen": "127.0.0.1:18080",
   "upstream": "https://open.feishu.cn",
-  "log_file": ""
+  "log_file": "",
+  "lazy_refresh": false
 }

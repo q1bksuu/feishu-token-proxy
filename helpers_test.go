@@ -169,9 +169,23 @@ func newTestManager(t *testing.T, f *fakeFeishu) (*TokenManager, *fakeClock, *lo
 	t.Helper()
 	logs := &lockedBuffer{}
 	clock := newFakeClock()
-	m := NewTokenManager(f.url(), testAppID, testAppSecret, f.srv.Client(), log.New(logs, "", 0))
+	m := NewTokenManager(f.url(), testAppID, testAppSecret, false, f.srv.Client(), log.New(logs, "", 0))
 	m.now = clock.Now
 	return m, clock, logs
+}
+
+// newLazyTestManager 返回懒刷新模式的 TokenManager，其余同 newTestManager。
+func newLazyTestManager(t *testing.T, f *fakeFeishu) (*TokenManager, *fakeClock, *lockedBuffer) {
+	t.Helper()
+	m, clock, logs := newTestManager(t, f)
+	m.lazy = true
+	return m, clock, logs
+}
+
+// waitRefreshIdle 等待懒刷新发起的异步获取结束。
+func waitRefreshIdle(t *testing.T, m *TokenManager) {
+	t.Helper()
+	require.Eventually(t, func() bool { return !m.refreshing.Load() }, 2*time.Second, 5*time.Millisecond)
 }
 
 // testEnv 是一套完整的测试环境：假飞书、TokenManager、Server，以及指向 Server 的本地 HTTP 服务。

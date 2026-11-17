@@ -50,16 +50,18 @@ exe 同目录 `config.json`，可用 `-config <路径>` 指定：
   "app_secret": "xxx",
   "listen": "127.0.0.1:18080",
   "upstream": "https://open.feishu.cn",
-  "log_file": ""
+  "log_file": "",
+  "lazy_refresh": false
 }
 ```
 
-`listen`、`upstream` 有默认值（如上）；`log_file` 为空时只输出到控制台，非空时同时写文件。
+`listen`、`upstream` 有默认值（如上）；`log_file` 为空时只输出到控制台，非空时同时写文件。`lazy_refresh` 默认 `false`。
 
 ### token 管理
 
 - 启动时先获取一次，失败则打印原因并退出，配置错误立刻暴露
 - 缓存 token 和过期时刻；后台每分钟检查一次，剩余不足 25 分钟就重新获取（飞书只在剩余不足 30 分钟时才发新 token，否则返回原值；旧 token 在过期前仍然可用）
+- 懒刷新（`lazy_refresh: true`）：不跑后台检查；请求到达时剩余不足 25 分钟就先返回旧 token、在后台换新，同一时刻只有一次换新，上次获取结束不足 5 秒时不发起
 - 剩余不足 5 分钟的 token 视为不可用，请求到达时同步获取
 - 后台刷新失败只记日志，旧 token 未过期继续用；请求到达时 token 不可用则同步获取，失败返回 502 + JSON 错误说明
 - 并发安全：同一时刻只有一个获取请求在飞行，其他请求等待复用结果

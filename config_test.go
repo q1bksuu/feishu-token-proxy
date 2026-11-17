@@ -23,7 +23,14 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:18080", c.Listen, "Listen")
 	assert.Equal(t, "https://open.feishu.cn", c.Upstream, "Upstream")
 	assert.Empty(t, c.LogFile, "LogFile")
+	assert.False(t, c.LazyRefresh, "LazyRefresh")
 	assert.Equal(t, "https://open.feishu.cn", c.UpstreamURL().String(), "UpstreamURL")
+}
+
+func TestLoadConfig_LazyRefresh(t *testing.T) {
+	c, err := LoadConfig(writeConfig(t, `{"app_id":"cli_test","app_secret":"`+testAppSecret+`","lazy_refresh":true}`))
+	require.NoError(t, err)
+	assert.True(t, c.LazyRefresh)
 }
 
 func TestLoadConfig_LogFileRelativeToConfigDir(t *testing.T) {

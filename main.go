@@ -43,7 +43,7 @@ func run() int {
 	logger := log.New(out, "", log.LstdFlags)
 
 	transport := NewUpstreamTransport()
-	tokens := NewTokenManager(cfg.UpstreamURL(), cfg.AppID, cfg.AppSecret,
+	tokens := NewTokenManager(cfg.UpstreamURL(), cfg.AppID, cfg.AppSecret, cfg.LazyRefresh,
 		&http.Client{Transport: transport, Timeout: 15 * time.Second}, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -64,14 +64,19 @@ func run() int {
 		return 1
 	}
 
-	go tokens.Run(ctx)
+	mode := "后台定时刷新 token"
+	if cfg.LazyRefresh {
+		mode = "按需刷新 token（lazy_refresh）"
+	} else {
+		go tokens.Run(ctx)
+	}
 	srv := &http.Server{
 		Handler:           NewServer(cfg.UpstreamURL(), tokens, transport, logger).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
-	logger.Printf("已启动，监听 http://%s，上游 %s", cfg.Listen, cfg.Upstream)
+	logger.Printf("已启动，监听 http://%s，上游 %s，%s", cfg.Listen, cfg.Upstream, mode)
 
 	select {
 	case err := <-serveErr:

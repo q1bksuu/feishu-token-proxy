@@ -23,6 +23,8 @@ type Config struct {
 	Listen    string `json:"listen"`
 	Upstream  string `json:"upstream"`
 	LogFile   string `json:"log_file"`
+	// LazyRefresh 为 true 时不在后台定时刷新，token 只在请求到来时按需获取
+	LazyRefresh bool `json:"lazy_refresh"`
 
 	upstreamURL *url.URL
 }

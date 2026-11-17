@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,15 +28,18 @@ const (
 // TokenManager 获取并缓存 tenant_access_token。
 // 所有对飞书鉴权接口的请求都在 fetchMu 下串行进行，并发调用方等待并复用同一次获取的结果；
 // mu 只保护状态字段，读状态时不会被进行中的获取阻塞。
+// 懒刷新模式（lazy）下没有后台定时刷新，Token 发现剩余有效期不足 refreshBefore 时在后台换新。
 type TokenManager struct {
 	tokenURL  string
 	appID     string
 	appSecret string
+	lazy      bool
 	client    *http.Client
 	logger    *log.Logger
 	now       func() time.Time
 
-	fetchMu sync.Mutex
+	fetchMu    sync.Mutex
+	refreshing atomic.Bool // 懒刷新的后台换新正在进行
 
 	mu          sync.Mutex
 	token       string
@@ -52,13 +56,14 @@ type TokenStatus struct {
 	LastError   string        // 最近一次失败原因，成功后清空
 }
 
-func NewTokenManager(upstream *url.URL, appID, appSecret string, client *http.Client, logger *log.Logger) *TokenManager {
+func NewTokenManager(upstream *url.URL, appID, appSecret string, lazy bool, client *http.Client, logger *log.Logger) *TokenManager {
 	u := *upstream
 	u.Path = tokenPath
 	return &TokenManager{
 		tokenURL:  u.String(),
 		appID:     appID,
 		appSecret: appSecret,
+		lazy:      lazy,
 		client:    client,
 		logger:    logger,
 		now:       time.Now,
@@ -66,11 +71,15 @@ func NewTokenManager(upstream *url.URL, appID, appSecret string, client *http.Cl
 }
 
 // Token 返回可用的 token 及其过期时刻；不可用时同步获取。
+// 懒刷新模式下 token 可用但剩余有效期不足 refreshBefore 时，先返回它，再由 refreshAsync 在后台换新。
 // 最近一次获取结束不足 failureBackoff 时复用它的结果：失败则返回同一个错误，成功则返回那次拿到的 token。
 // 因此排队等锁的调用方共享刚结束的那次获取，飞书给的有效期过短时也不会每个请求都去获取。
 // 需要发起新获取而 ctx 已结束时直接返回 ctx 的错误。
 func (m *TokenManager) Token(ctx context.Context) (string, time.Time, error) {
 	if tok, exp, ok := m.usable(); ok {
+		if m.lazy && exp.Sub(m.now()) < refreshBefore {
+			m.refreshAsync()
+		}
 		return tok, exp, nil
 	}
 
@@ -131,6 +140,25 @@ func (m *TokenManager) RefreshIfNeeded(ctx context.Context) {
 		return
 	}
 	_ = m.fetch(ctx)
+}
+
+// refreshAsync 在后台调一次 RefreshIfNeeded。已有一次在进行，或最近一次获取结束不足 failureBackoff 时直接返回。
+// 后台换新与触发它的请求无关，用独立的 ctx，调用方断开也照常完成。
+func (m *TokenManager) refreshAsync() {
+	if !m.refreshing.CompareAndSwap(false, true) {
+		return
+	}
+	m.mu.Lock()
+	recent := !m.lastDone.IsZero() && m.now().Sub(m.lastDone) < failureBackoff
+	m.mu.Unlock()
+	if recent {
+		m.refreshing.Store(false)
+		return
+	}
+	go func() {
+		defer m.refreshing.Store(false)
+		m.RefreshIfNeeded(context.Background())
+	}()
 }
 
 // Run 每 refreshCheckInterval 调一次 RefreshIfNeeded，直到 ctx 结束。

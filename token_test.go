@@ -299,3 +299,180 @@ func TestToken_RejectsNonPositiveExpire(t *testing.T) {
 	_, _, _ = m.Token(context.Background())
 	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits (failure backoff)")
 }
+
+// lazyTestSetup 取到 t-first（第 1 次获取）后把时钟推进到剩余 left。
+func lazyTestSetup(t *testing.T, m *TokenManager, clock *fakeClock, left time.Duration) {
+	t.Helper()
+	tok, _, err := m.Token(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "t-first", tok)
+	clock.Advance(7200*time.Second - left)
+}
+
+// concurrentTokens 并发 n 个 Token 调用，全部应无错误并返回 want。
+func concurrentTokens(t *testing.T, m *TokenManager, n int, want string) {
+	t.Helper()
+	results := make([]string, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Go(func() {
+			results[i], _, errs[i] = m.Token(context.Background())
+		})
+	}
+	wg.Wait()
+	for i := range results {
+		assert.NoError(t, errs[i], "caller %d", i)
+		assert.Equal(t, want, results[i], "caller %d", i)
+	}
+}
+
+func TestToken_EagerModeNoAsyncRefresh(t *testing.T) {
+	f := newFakeFeishu(t)
+	m, clock, _ := newTestManager(t, f)
+	lazyTestSetup(t, m, clock, 20*time.Minute)
+
+	tok, _, err := m.Token(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "t-first", tok)
+	assert.False(t, m.refreshing.Load(), "async refresh started in eager mode")
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
+}
+
+func TestLazy_NoFetchWithEnoughTimeLeft(t *testing.T) {
+	f := newFakeFeishu(t)
+	m, clock, _ := newLazyTestManager(t, f)
+	lazyTestSetup(t, m, clock, 25*time.Minute)
+
+	tok, _, err := m.Token(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "t-first", tok)
+	assert.False(t, m.refreshing.Load(), "async refresh started with 25min left")
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
+}
+
+func TestLazy_AsyncRefreshWithinWindow(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setTokens("t-first", "t-second")
+	f.setTokenDelay(100 * time.Millisecond)
+	m, clock, _ := newLazyTestManager(t, f)
+	lazyTestSetup(t, m, clock, 20*time.Minute)
+
+	concurrentTokens(t, m, 50, "t-first")
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
+	tok, _, err := m.Token(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "t-second", tok, "Token after async refresh")
+}
+
+func TestLazy_AsyncRefreshSingleFlight(t *testing.T) {
+	f := newFakeFeishu(t)
+	m, clock, _ := newLazyTestManager(t, f)
+	lazyTestSetup(t, m, clock, 20*time.Minute)
+	f.setFailCode(10003)
+	f.setTokenDelay(100 * time.Millisecond)
+
+	concurrentTokens(t, m, 50, "t-first")
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
+	assert.Contains(t, m.Status().LastError, "10003", "Status().LastError")
+}
+
+func TestLazy_AsyncRefreshBackoff(t *testing.T) {
+	f := newFakeFeishu(t)
+	m, clock, _ := newLazyTestManager(t, f)
+	lazyTestSetup(t, m, clock, 20*time.Minute)
+	f.setFailCode(10003)
+	ctx := context.Background()
+
+	_, _, _ = m.Token(ctx)
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits after first async refresh")
+
+	clock.Advance(4 * time.Second)
+	_, _, _ = m.Token(ctx)
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits within backoff")
+
+	clock.Advance(2 * time.Second)
+	_, _, _ = m.Token(ctx)
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 3, f.tokenHits.Load(), "tokenHits after backoff")
+}
+
+func TestLazy_ShortExpireThrottled(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setExpire(20 * 60)
+	f.setTokens("t-first", "t-second")
+	m, clock, _ := newLazyTestManager(t, f)
+	ctx := context.Background()
+
+	for i := range 21 {
+		tok, _, err := m.Token(ctx)
+		require.NoError(t, err, "Token #%d", i)
+		require.Equal(t, "t-first", tok, "Token #%d", i)
+	}
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits within backoff")
+
+	clock.Advance(6 * time.Second)
+	_, _, _ = m.Token(ctx)
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits after backoff")
+
+	_, _, _ = m.Token(ctx)
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits right after refresh")
+}
+
+func TestLazy_SyncFetchUnderFiveMinutes(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setTokens("t-first", "t-second")
+	m, clock, _ := newLazyTestManager(t, f)
+	lazyTestSetup(t, m, clock, 5*time.Minute-time.Second)
+
+	tok, _, err := m.Token(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "t-second", tok)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
+}
+
+func TestLazy_SyncCallerReusesInFlightRefresh(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setTokens("t-first", "t-second")
+	f.setTokenDelay(200 * time.Millisecond)
+	m, clock, _ := newLazyTestManager(t, f)
+	lazyTestSetup(t, m, clock, 20*time.Minute)
+	ctx := context.Background()
+
+	tok, _, err := m.Token(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "t-first", tok, "Token that triggers async refresh")
+	clock.Advance(16 * time.Minute)
+	tok, _, err = m.Token(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, "t-second", tok, "Token with 4min left")
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
+}
+
+func TestLazy_AsyncRefreshIgnoresCallerCancel(t *testing.T) {
+	f := newFakeFeishu(t)
+	f.setTokens("t-first", "t-second")
+	f.setTokenDelay(50 * time.Millisecond)
+	m, clock, _ := newLazyTestManager(t, f)
+	lazyTestSetup(t, m, clock, 20*time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tok, _, err := m.Token(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, "t-first", tok)
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
+	tok, _, err = m.Token(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "t-second", tok, "Token after async refresh")
+}
