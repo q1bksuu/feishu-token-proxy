@@ -478,3 +478,27 @@ func TestLazy_AsyncRefreshIgnoresCallerCancel(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "t-second", tok, "Token after async refresh")
 }
+
+func TestLazy_AsyncRefreshSkipsRightAfterForceRefresh(t *testing.T) {
+	f := newFakeFeishu(t)
+	m, clock, _ := newLazyTestManager(t, f)
+	setupAtRemaining(t, m, clock, 20*time.Minute)
+	f.setFailCode(10003)
+	f.setTokenDelay(200 * time.Millisecond)
+	ctx := context.Background()
+
+	forceDone := make(chan struct{})
+	go func() {
+		defer close(forceDone)
+		_, _, _ = m.ForceRefresh(ctx, "t-first")
+	}()
+	require.Eventually(t, func() bool { return f.tokenHits.Load() == 2 }, 2*time.Second, time.Millisecond,
+		"ForceRefresh request sent")
+
+	tok, _, err := m.Token(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, "t-first", tok)
+	<-forceDone
+	waitRefreshIdle(t, m)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
+}

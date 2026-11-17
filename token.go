@@ -132,11 +132,15 @@ func (m *TokenManager) ForceRefresh(ctx context.Context, bad string) (string, bo
 }
 
 // RefreshIfNeeded 在 token 不可用或剩余有效期不足 refreshBefore 时重新获取；失败只记日志，旧 token 继续可用，直到剩余有效期不足 expirySkew。
+// 拿到 fetchMu 时最近一次获取（含排在前面的强制刷新、同步获取）结束不足 failureBackoff，则沿用那次的结果，不再获取。
 func (m *TokenManager) RefreshIfNeeded(ctx context.Context) {
 	m.fetchMu.Lock()
 	defer m.fetchMu.Unlock()
 
 	if _, exp, ok := m.usable(); ok && exp.Sub(m.now()) >= refreshBefore {
+		return
+	}
+	if m.doneRecently() {
 		return
 	}
 	_ = m.fetch(ctx)
@@ -148,10 +152,7 @@ func (m *TokenManager) refreshAsync() {
 	if !m.refreshing.CompareAndSwap(false, true) {
 		return
 	}
-	m.mu.Lock()
-	recent := !m.lastDone.IsZero() && m.now().Sub(m.lastDone) < failureBackoff
-	m.mu.Unlock()
-	if recent {
+	if m.doneRecently() {
 		m.refreshing.Store(false)
 		return
 	}
@@ -159,6 +160,14 @@ func (m *TokenManager) refreshAsync() {
 		defer m.refreshing.Store(false)
 		m.RefreshIfNeeded(context.Background())
 	}()
+}
+
+// doneRecently 报告最近一次获取（无论成败）是否结束不足 failureBackoff。
+func (m *TokenManager) doneRecently() bool {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.lastDone.IsZero() && now.Sub(m.lastDone) < failureBackoff
 }
 
 // Run 每 refreshCheckInterval 调一次 RefreshIfNeeded，直到 ctx 结束。
