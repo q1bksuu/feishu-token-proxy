@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToken_FetchesOnceAndCaches(t *testing.T) {
@@ -17,29 +19,18 @@ func TestToken_FetchesOnceAndCaches(t *testing.T) {
 
 	for i := range 2 {
 		tok, exp, err := m.Token(ctx)
-		if err != nil {
-			t.Fatalf("Token #%d: %v", i, err)
-		}
-		if tok != "t-first" {
-			t.Errorf("Token #%d = %q", i, tok)
-		}
-		if want := clock.Now().Add(7200 * time.Second); !exp.Equal(want) {
-			t.Errorf("expiresAt = %v, want %v", exp, want)
-		}
+		require.NoError(t, err, "Token #%d", i)
+		assert.Equal(t, "t-first", tok, "Token #%d", i)
+		assert.WithinDuration(t, clock.Now().Add(7200*time.Second), exp, 0, "Token #%d expiresAt", i)
 	}
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1", n)
-	}
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
 	body, ct := f.snapshot()
-	if body["app_id"] != testAppID || body["app_secret"] != testAppSecret || len(body) != 2 {
-		t.Errorf("token request body = %v", body)
-	}
-	if !strings.HasPrefix(ct, "application/json") {
-		t.Errorf("Content-Type = %q", ct)
-	}
-	if l := logs.String(); strings.Contains(l, "t-first") || strings.Contains(l, testAppSecret) {
-		t.Errorf("logs leak token or secret: %s", l)
-	}
+	assert.Equal(t, testAppID, body["app_id"], "token request app_id")
+	assert.Equal(t, testAppSecret, body["app_secret"], "token request app_secret")
+	assert.Len(t, body, 2, "token request body")
+	assert.True(t, strings.HasPrefix(ct, "application/json"), "Content-Type = %q", ct)
+	assert.NotContains(t, logs.String(), "t-first", "logs leak token")
+	assert.NotContains(t, logs.String(), testAppSecret, "logs leak secret")
 }
 
 func TestToken_RefetchesNearExpiry(t *testing.T) {
@@ -48,17 +39,13 @@ func TestToken_RefetchesNearExpiry(t *testing.T) {
 	m, clock, _ := newTestManager(t, f)
 	ctx := context.Background()
 
-	if tok, _, _ := m.Token(ctx); tok != "t-first" {
-		t.Fatalf("Token = %q", tok)
-	}
+	first, _, _ := m.Token(ctx)
+	require.Equal(t, "t-first", first)
 	clock.Advance(7200*time.Second - 59*time.Second)
 	tok, _, err := m.Token(ctx)
-	if err != nil || tok != "t-second" {
-		t.Errorf("Token = %q, %v; want t-second", tok, err)
-	}
-	if n := f.tokenHits.Load(); n != 2 {
-		t.Errorf("tokenHits = %d, want 2", n)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "t-second", tok)
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
 }
 
 func TestToken_ConcurrentCallersShareOneFetch(t *testing.T) {
@@ -76,13 +63,10 @@ func TestToken_ConcurrentCallersShareOneFetch(t *testing.T) {
 	}
 	wg.Wait()
 	for i := range results {
-		if errs[i] != nil || results[i] != "t-first" {
-			t.Errorf("caller %d: %q, %v", i, results[i], errs[i])
-		}
+		assert.NoError(t, errs[i], "caller %d", i)
+		assert.Equal(t, "t-first", results[i], "caller %d", i)
 	}
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1", n)
-	}
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
 }
 
 func TestToken_FailureBackoff(t *testing.T) {
@@ -92,29 +76,17 @@ func TestToken_FailureBackoff(t *testing.T) {
 	ctx := context.Background()
 
 	_, _, err := m.Token(ctx)
-	if err == nil || !strings.Contains(err.Error(), "10003") {
-		t.Fatalf("err = %v, want code 10003", err)
-	}
-	if strings.Contains(err.Error(), testAppSecret) {
-		t.Errorf("error leaks secret: %v", err)
-	}
+	require.ErrorContains(t, err, "10003")
+	assert.NotContains(t, err.Error(), testAppSecret, "error leaks secret")
 
 	_, _, err = m.Token(ctx)
-	if err == nil {
-		t.Error("second Token within backoff: want error")
-	}
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits within backoff = %d, want 1", n)
-	}
+	assert.Error(t, err, "second Token within backoff")
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits within backoff")
 
 	clock.Advance(6 * time.Second)
 	_, _, _ = m.Token(ctx)
-	if n := f.tokenHits.Load(); n != 2 {
-		t.Errorf("tokenHits after backoff = %d, want 2", n)
-	}
-	if strings.Contains(logs.String(), testAppSecret) {
-		t.Errorf("logs leak secret: %s", logs.String())
-	}
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits after backoff")
+	assert.NotContains(t, logs.String(), testAppSecret, "logs leak secret")
 }
 
 func TestRefreshIfNeeded(t *testing.T) {
@@ -123,23 +95,17 @@ func TestRefreshIfNeeded(t *testing.T) {
 	m, clock, _ := newTestManager(t, f)
 	ctx := context.Background()
 
-	if _, _, err := m.Token(ctx); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := m.Token(ctx)
+	require.NoError(t, err)
 	clock.Advance(7200*time.Second - 30*time.Minute)
 	m.RefreshIfNeeded(ctx)
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits with 30min left = %d, want 1", n)
-	}
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits with 30min left")
 
 	clock.Advance(6 * time.Minute)
 	m.RefreshIfNeeded(ctx)
-	if n := f.tokenHits.Load(); n != 2 {
-		t.Errorf("tokenHits with 24min left = %d, want 2", n)
-	}
-	if tok, _, _ := m.Token(ctx); tok != "t-second" {
-		t.Errorf("Token = %q, want t-second", tok)
-	}
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits with 24min left")
+	tok, _, _ := m.Token(ctx)
+	assert.Equal(t, "t-second", tok)
 }
 
 func TestRefreshIfNeeded_FailureKeepsOldToken(t *testing.T) {
@@ -147,24 +113,18 @@ func TestRefreshIfNeeded_FailureKeepsOldToken(t *testing.T) {
 	m, clock, _ := newTestManager(t, f)
 	ctx := context.Background()
 
-	if tok, _, _ := m.Token(ctx); tok != "t-first" {
-		t.Fatalf("Token = %q", tok)
-	}
+	first, _, _ := m.Token(ctx)
+	require.Equal(t, "t-first", first)
 	f.setFailCode(10003)
 	clock.Advance(7200*time.Second - 20*time.Minute)
 	m.RefreshIfNeeded(ctx)
 	hits := f.tokenHits.Load()
 
 	tok, _, err := m.Token(ctx)
-	if err != nil || tok != "t-first" {
-		t.Errorf("Token = %q, %v; want t-first", tok, err)
-	}
-	if n := f.tokenHits.Load(); n != hits {
-		t.Errorf("Token issued a new fetch: hits %d → %d", hits, n)
-	}
-	if s := m.Status(); !strings.Contains(s.LastError, "10003") {
-		t.Errorf("Status().LastError = %q", s.LastError)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "t-first", tok)
+	assert.Equal(t, hits, f.tokenHits.Load(), "Token issued a new fetch")
+	assert.Contains(t, m.Status().LastError, "10003", "Status().LastError")
 }
 
 func TestForceRefresh(t *testing.T) {
@@ -173,57 +133,46 @@ func TestForceRefresh(t *testing.T) {
 	t.Run("冷却期内不刷新", func(t *testing.T) {
 		f := newFakeFeishu(t)
 		m, _, _ := newTestManager(t, f)
-		if _, _, err := m.Token(ctx); err != nil {
-			t.Fatal(err)
-		}
+		_, _, err := m.Token(ctx)
+		require.NoError(t, err)
 		tok, ok, err := m.ForceRefresh(ctx, "t-first")
-		if tok != "" || ok || err != nil {
-			t.Errorf("ForceRefresh = %q, %v, %v; want \"\", false, nil", tok, ok, err)
-		}
-		if n := f.tokenHits.Load(); n != 1 {
-			t.Errorf("tokenHits = %d, want 1", n)
-		}
+		assert.Empty(t, tok, "ForceRefresh token")
+		assert.False(t, ok, "ForceRefresh ok")
+		assert.NoError(t, err, "ForceRefresh")
+		assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
 	})
 
 	t.Run("冷却期后换新，已被换掉则直接复用", func(t *testing.T) {
 		f := newFakeFeishu(t)
 		f.setTokens("t-first", "t-second")
 		m, clock, _ := newTestManager(t, f)
-		if _, _, err := m.Token(ctx); err != nil {
-			t.Fatal(err)
-		}
+		_, _, err := m.Token(ctx)
+		require.NoError(t, err)
 		clock.Advance(61 * time.Second)
 		tok, ok, err := m.ForceRefresh(ctx, "t-first")
-		if tok != "t-second" || !ok || err != nil {
-			t.Errorf("ForceRefresh = %q, %v, %v; want t-second, true, nil", tok, ok, err)
-		}
-		if n := f.tokenHits.Load(); n != 2 {
-			t.Errorf("tokenHits = %d, want 2", n)
-		}
+		assert.Equal(t, "t-second", tok, "ForceRefresh token")
+		assert.True(t, ok, "ForceRefresh ok")
+		assert.NoError(t, err, "ForceRefresh")
+		assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
 
 		tok, ok, err = m.ForceRefresh(ctx, "t-first")
-		if tok != "t-second" || !ok || err != nil {
-			t.Errorf("second ForceRefresh = %q, %v, %v; want t-second, true, nil", tok, ok, err)
-		}
-		if n := f.tokenHits.Load(); n != 2 {
-			t.Errorf("tokenHits after reuse = %d, want 2", n)
-		}
+		assert.Equal(t, "t-second", tok, "second ForceRefresh token")
+		assert.True(t, ok, "second ForceRefresh ok")
+		assert.NoError(t, err, "second ForceRefresh")
+		assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits after reuse")
 	})
 
 	t.Run("飞书返回同一 token", func(t *testing.T) {
 		f := newFakeFeishu(t)
 		m, clock, _ := newTestManager(t, f)
-		if _, _, err := m.Token(ctx); err != nil {
-			t.Fatal(err)
-		}
+		_, _, err := m.Token(ctx)
+		require.NoError(t, err)
 		clock.Advance(61 * time.Second)
 		tok, ok, err := m.ForceRefresh(ctx, "t-first")
-		if tok != "" || ok || err != nil {
-			t.Errorf("ForceRefresh = %q, %v, %v; want \"\", false, nil", tok, ok, err)
-		}
-		if n := f.tokenHits.Load(); n != 2 {
-			t.Errorf("tokenHits = %d, want 2", n)
-		}
+		assert.Empty(t, tok, "ForceRefresh token")
+		assert.False(t, ok, "ForceRefresh ok")
+		assert.NoError(t, err, "ForceRefresh")
+		assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
 	})
 }
 
@@ -232,9 +181,8 @@ func TestForceRefresh_ConcurrentCallersFetchOnce(t *testing.T) {
 	f.setTokens("t-first", "t-second")
 	m, clock, _ := newTestManager(t, f)
 	ctx := context.Background()
-	if _, _, err := m.Token(ctx); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := m.Token(ctx)
+	require.NoError(t, err)
 	clock.Advance(61 * time.Second)
 
 	type result struct {
@@ -252,13 +200,11 @@ func TestForceRefresh_ConcurrentCallersFetchOnce(t *testing.T) {
 	}
 	wg.Wait()
 	for i, r := range results {
-		if r.tok != "t-second" || !r.ok || r.err != nil {
-			t.Errorf("caller %d: %q, %v, %v", i, r.tok, r.ok, r.err)
-		}
+		assert.Equal(t, "t-second", r.tok, "caller %d token", i)
+		assert.True(t, r.ok, "caller %d ok", i)
+		assert.NoError(t, r.err, "caller %d", i)
 	}
-	if n := f.tokenHits.Load(); n != 2 {
-		t.Errorf("tokenHits = %d, want 2", n)
-	}
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits")
 }
 
 func TestStatus(t *testing.T) {
@@ -266,17 +212,16 @@ func TestStatus(t *testing.T) {
 	m, clock, _ := newTestManager(t, f)
 
 	s := m.Status()
-	if s.Valid || s.ExpiresIn != 0 {
-		t.Errorf("initial Status = %+v", s)
-	}
+	assert.False(t, s.Valid, "initial Valid")
+	assert.Zero(t, s.ExpiresIn, "initial ExpiresIn")
 
-	if _, _, err := m.Token(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := m.Token(context.Background())
+	require.NoError(t, err)
 	s = m.Status()
-	if !s.Valid || s.ExpiresIn != 7200*time.Second || !s.LastRefresh.Equal(clock.Now()) || s.LastError != "" {
-		t.Errorf("Status after Token = %+v", s)
-	}
+	assert.True(t, s.Valid, "Valid after Token")
+	assert.Equal(t, 7200*time.Second, s.ExpiresIn, "ExpiresIn after Token")
+	assert.WithinDuration(t, clock.Now(), s.LastRefresh, 0, "LastRefresh after Token")
+	assert.Empty(t, s.LastError, "LastError after Token")
 }
 
 func TestToken_WaitersReuseSlowFailedFetch(t *testing.T) {
@@ -295,32 +240,24 @@ func TestToken_WaitersReuseSlowFailedFetch(t *testing.T) {
 	}
 	wg.Wait()
 	for i, err := range errs {
-		if err == nil || !strings.Contains(err.Error(), "10003") {
-			t.Errorf("caller %d: err = %v, want code 10003", i, err)
-		}
+		assert.ErrorContains(t, err, "10003", "caller %d", i)
 	}
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1", n)
-	}
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
 }
 
 func TestToken_CanceledCallerDoesNotFetch(t *testing.T) {
 	f := newFakeFeishu(t)
 	f.setFailCode(10003)
 	m, clock, _ := newTestManager(t, f)
-	if _, _, err := m.Token(context.Background()); err == nil {
-		t.Fatal("want first Token to fail")
-	}
+	_, _, err := m.Token(context.Background())
+	require.Error(t, err, "want first Token to fail")
 	clock.Advance(6 * time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := m.Token(ctx); !errors.Is(err, context.Canceled) {
-		t.Errorf("err = %v, want context.Canceled", err)
-	}
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1", n)
-	}
+	_, _, err = m.Token(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
 }
 
 func TestToken_ShortExpireThrottled(t *testing.T) {
@@ -330,19 +267,14 @@ func TestToken_ShortExpireThrottled(t *testing.T) {
 
 	for i := range 20 {
 		tok, _, err := m.Token(context.Background())
-		if err != nil || tok != "t-first" {
-			t.Fatalf("Token #%d = %q, %v", i, tok, err)
-		}
+		require.NoError(t, err, "Token #%d", i)
+		require.Equal(t, "t-first", tok, "Token #%d", i)
 	}
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1", n)
-	}
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits")
 
 	clock.Advance(6 * time.Second)
 	_, _, _ = m.Token(context.Background())
-	if n := f.tokenHits.Load(); n != 2 {
-		t.Errorf("tokenHits after backoff = %d, want 2", n)
-	}
+	assert.EqualValues(t, 2, f.tokenHits.Load(), "tokenHits after backoff")
 }
 
 func TestToken_RejectsNonPositiveExpire(t *testing.T) {
@@ -351,11 +283,7 @@ func TestToken_RejectsNonPositiveExpire(t *testing.T) {
 	m, _, _ := newTestManager(t, f)
 
 	_, _, err := m.Token(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "expire") {
-		t.Fatalf("err = %v, want error mentioning expire", err)
-	}
+	require.ErrorContains(t, err, "expire")
 	_, _, _ = m.Token(context.Background())
-	if n := f.tokenHits.Load(); n != 1 {
-		t.Errorf("tokenHits = %d, want 1 (failure backoff)", n)
-	}
+	assert.EqualValues(t, 1, f.tokenHits.Load(), "tokenHits (failure backoff)")
 }
