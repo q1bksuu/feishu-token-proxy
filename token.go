@@ -131,7 +131,7 @@ func (m *TokenManager) ForceRefresh(ctx context.Context, bad string) (string, bo
 	return tok, true, nil
 }
 
-// RefreshIfNeeded 在 token 不可用或剩余有效期不足 refreshBefore 时重新获取；失败只记日志，旧 token 继续可用直到过期。
+// RefreshIfNeeded 在 token 不可用或剩余有效期不足 refreshBefore 时重新获取；失败只记日志，旧 token 继续可用，直到剩余有效期不足 expirySkew。
 func (m *TokenManager) RefreshIfNeeded(ctx context.Context) {
 	m.fetchMu.Lock()
 	defer m.fetchMu.Unlock()
